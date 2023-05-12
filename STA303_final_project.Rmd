@@ -1,0 +1,379 @@
+---
+title: "Prediction of raining in Australia using GLM and GLMM based on data Australia weather data from 2007 to 2017"
+author: "Ruike Xu 1006562550"
+date: "29/08/2021"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("C:/Users/Ruike Xu/Desktop/STA303/Final project")
+library(openintro)
+library(tidyverse)
+library(faraway)
+```
+
+# Introduction
+
+There is no doubt that raining prediction is an essential technique for people around the world. In ancient times, perceptive people with such insight to detect nature's signs has lead people to do the right tasks at the right time, such as agricultural and migration planning. In contemporary society, countries that heavily depend on the agricultural industry are closely bonded upon crop productivity and rainfall, like Australia. According to the Department of Agriculture, Water and the Environment in Australia, Agriculture and its closely related sectors earn approximately $155 billion a year for a 12% share of GDP. (Department of Agriculture, Water and the Environment, 2021) The growing condition of the agricultural industry has a great impact on the economic and social aspects, so it is important to precisely predict rain given different weather conditions for improvement of crop productivity and efficient use of water resources. We will apply modeling techniques (mainly GLM and GLMM) to a dataset of weather conditions of 22 cities in Australia. 
+
+# Data analysis
+
+## Data cleaning 
+```{r, include = FALSE}
+#rm(list=ls())
+# Here we load in the weather data and perform basic data cleaning process
+weather_data <- read_csv("weather.csv")
+head(weather_data)
+str(weather_data)
+
+(num <- nrow(weather_data))
+c(as.character(weather_data$Date[1]), as.character(weather_data$Date[num]))
+(non_na_percent <- apply(weather_data, 2, function(x) 1- sum(is.na(x))/num))
+
+weather_data2 <- weather_data[, -c(6, 7)]
+weather_data2_clean <- na.omit(weather_data2)
+
+# Strip the year of each observations and split dataset into training and testing data
+Year <- format(as.POSIXct(strptime(weather_data2_clean$Date, "%Y-%m-%d", tz ="")), format = "%Y")
+weather_data2_clean$Year <- as.numeric(Year)
+
+weather_data2_clean <- weather_data2_clean %>% mutate(RainToday = ifelse(RainToday == "Yes", 1, 0), RainTomorrow = ifelse(RainTomorrow == "Yes", 1, 0))
+
+weather_test <- weather_data2_clean[weather_data2_clean$Year=="2017", ]
+
+weather_train <- weather_data2_clean[weather_data2_clean$Year!="2017", ]
+```
+
+Our chosen dataset for this study contains weather data for 22 cities in Australia, which are measured and recorded from 2007 to 2017. There are in total 145460 observations in this dataset, which consists of details of weather-related measurements. By calculating the percentage of non-missing values in each variable for the whole dataset, Evaporation and Sunshine have a tiny amount of real recorded data comparing with other variables, Evaporation has only `r non_na_percent[6] * 100`% of non-missing values whereas Sunshine has only `r non_na_percent[7] * 100`%. On the other hand, these two variables are binary categorical variables, which makes us hard to interpret these missing values. Simply removing these missing values would lead to a large reduction of observations. Thus, we would remove these two variables from the dataset. The rest of the variables have much fewer missing values, after removing all the missing values, we preserve 71045 observations. We also convert RainToday and RainTomorrow to be dummy binary variables (Yes = 1; No = 0) We extract the year of observations that are recorded and split the observations that are measured in 2017 to be testing data. The rest of the dataset then becomes the training data of our model. 
+
+## Essential data summaries
+```{r, include=FALSE}
+overall_RainToday_rate <- sum(weather_train$RainToday == 1)/length(weather_train$RainToday)
+#cat("Fraction of recordings of cities that had rain = ", format(overall_RainToday_rate, digits = 3))
+
+#overall_RainTom_rate <- sum(weather_train$RainTomorrow == 1)/length(weather_train$RainTomorrow)
+#cat("Fraction of recordings of cities that had rain = ", format(overall_RainTom_rate, digits = 3))
+
+# Table indicating raining and not raining observations for each city
+data_table <- subset(weather_train, select=c(20,2))
+table(data_table)
+weather_train %>% count(Location, sort = TRUE)
+
+# Summary table for quantitative variables 
+summary(weather_train[, c(3,4,5,7,10,11,12,13,14,15,16,17,18,19)])
+
+```
+
+The overall rain percentage of the training dataset from 2007 to 2016 was `r overall_RainToday_rate`, which indicates that only about a quarter of the observations in training data was recorded as raining. We could observe that some of the cities have a relatively large sample size than the others in the dataset, for instance, the city that contains most of the observations is Darwin(2941 data points) while the fewest city Uluru has only 202 observations. Such a huge gap in the number of observations between different cities could result from the missing values, some cities might be unable to record data properly due to technical issues, which would cause a huge statistical bias in our study. 
+
+## Data visualization 
+```{r, include=FALSE}
+# Histogram for each quantitative variables individually
+weather_train %>% select(-c(Date, Year, RainToday, RainTomorrow)) %>% keep(is.numeric) %>% 
+  gather() %>% ggplot(aes(value)) + 
+  facet_wrap(~ key, scales = "free") + 
+  geom_histogram() + ggtitle("Histograms of quantitative variables in weather_train")
+```
+
+We could observe the distribution of quantitative variables of the dataset using histogram, most of the variables are approximately normally distributed, however, the fraction of sky obscured by cloud at 9 am and 3 pm have fewer observations at the center, indicating the weather of the given observations are mostly either a bright sky or overcloud. The distribution of rainfall level, on the other hand, is seriously right-skewed. Most of the data points are centered at 0, which means that the given observations are recorded in mostly dry conditions. 
+
+```{r, echo=FALSE}
+#install.packages("corrplot")
+library(corrplot)
+# Correlation relationship among quantitative variables (Giorgio Garziano, 2020)
+factor_vars <- names(which(sapply(weather_train, class) == "factor"))
+numeric_vars <- setdiff(colnames(weather_train), factor_vars)
+numeric_vars <- setdiff(numeric_vars, c("Date", "Location", "WindGustDir", "WindDir9am", "WindDir3pm"))
+numeric_vars_mat <- as.matrix(weather_train[, numeric_vars, drop=FALSE])
+numeric_vars_cor <- cor(numeric_vars_mat)
+corrplot(numeric_vars_cor, title = "Correlation between quantitative variables", mar = c(0,0,1,0))
+```
+
+From the above correlation plot among quantitative variables(Giorgio Garziano, 2020), we could observe that Temp9am is strongly positively correlated to MinTemp, MaxTemp, and Temp3pm, which means that these predictors are not independent in the dataset. In addition, Temp3pm is also strongly positively correlated to MaxTemp and MinTemp. The Pressure at 9 am is strongly positively correlated to the pressure measured at 3 pm. Humidity3pm has a moderate positive correlation with Humidity9am while Temp3pm has a moderate negative correlation with Humidity at 9 am and 3 pm. Since these variables are not independent of each other, we need to take into account the interaction effect when we construct our models. 
+
+
+```{r fig.align="center", echo = FALSE,fig.width = 18, fig.height=18}
+weather_train %>% ggplot(aes(x=Year, y=Rainfall)) + geom_point(position = position_jitter(), alpha=0.3) + labs(x="Year from 2007 to 2016", y="Precipitation in 24 hours from 9am in milimeters") + facet_wrap(~Location) + ggtitle("Rainfall in mm for each city from 2007 to 2016") + theme(plot.title = element_text(color="black", size=20, face="bold.italic", hjust=0.5))
+```
+
+From the above points plots for each city, we can see some of the cities have lost a relatively large number of observations comparing to other cities, for instance, Hobart, Katherine, Richmond, and Uluru. Brisbane, Cairns, CoffsHarbour, Darwin, Townsville, and Williamtown have a higher rainfall level on average than the other cities in our dataset. 
+
+# Methods
+
+GLM is generalized linear regression that allows the linear model to be related to the response variable by a link function. There are several assumptions need to be preserved for GLM: the independence of each observation, homogeneity of variance, normality of the residuals, and linearity between the response variable and the linear predictor. GLMM is an extension of GLM where the linear predictors contain fixed effects with random effects. There are a few assumptions to maintain for GLMM, the intercepts and slopes of the random effects are normally distributed, the use of link function is appropriate for the model, homogeneity of variance. 
+
+```{r, include=FALSE}
+# Model selection criteria
+criteria <- function(model){
+    n <- length(model$residuals)
+    p <- length(model$coefficients) - 1
+    RSS <- sum(model$residuals^2)
+    AIC <- n*log(RSS/n) + 2*p
+    BIC <- n*log(RSS/n) + (p+2)*log(n)
+    res <- c(AIC, BIC)
+    names(res) <- c("AIC", "BIC")
+    return(res)
+}
+```
+
+## Choice of model
+```{r, include=FALSE}
+# Model 1: GLM full model without interaction  
+GLM_1 <- glm(RainTomorrow ~ . -Date, data = weather_train, family = binomial)
+summary(GLM_1)
+drop1(GLM_1, test = "LRT")
+GLM_2 <- glm(RainTomorrow ~ . -Date -MaxTemp -MinTemp -Humidity9am -Temp9am -Temp3pm -Year, data = weather_train, family = binomial)
+summary(GLM_2)
+drop1(GLM_2, test = "LRT")
+
+crit1 <- criteria(model = GLM_1)
+# prediction correct percentage 
+pred_1 <- predict(GLM_1, newdata = weather_test, type = "response")
+pred_num_1 <- ifelse(pred_1 > 0.5, 1, 0)
+y_pred_1 <- factor(pred_num_1, levels=c(0,1))
+pre_perc_1 <- mean(y_pred_1 == weather_test$RainTomorrow)
+
+crit2 <- criteria(model = GLM_2)
+# prediction correct percentage 
+pred_2 <- predict(GLM_2, newdata = weather_test, type = "response")
+pred_num_2 <- ifelse(pred_2 > 0.5, 1, 0)
+y_pred_2 <- factor(pred_num_2, levels=c(0,1))
+pre_perc_2 <- mean(y_pred_2 == weather_test$RainTomorrow)
+
+## Model diagnostics
+weather_train_1 <- mutate(weather_train, residuals_1=residuals(GLM_2), linpred_1=predict(GLM_2), predprob_1 = predict(GLM_2, type = "response"))
+gdf_1 <- group_by(weather_train_1, ntile(linpred_1, 100))
+diagdf_1 <- summarise(gdf_1, residuals_1=mean(residuals_1), linpred_1=mean(linpred_1), predprob_1=mean(predprob_1))
+par(mfrow=c(1,2))
+plot(residuals_1~linpred_1, diagdf_1, xlab="Linear Predictor", ylab="Deviance Residuals", pch=20) 
+plot(residuals_1~predprob_1, diagdf_1, xlab="Fitted Values", ylab="Deviance Residuals", pch=20)
+
+qqnorm(residuals(GLM_2))
+halfnorm(hatvalues(GLM_2))
+```
+
+The first model we choose to fit was a full logistic GLM without date variable and interaction terms. This model contains 21 predictors, by simply looking at the summary table, several predictors are insignificant in predicting whether tomorrow will rain. The AIC and BIC values of the model indicate that the model is poorly fitted (AIC = `r crit1[1]`; BIC = `r crit1[2]`) and the huge amount of regression coefficients make the model very hard to interpret. We employ a likelihood ratio test to compare between the fitted model and nested model with each independent term removed. The modified model makes the individual predictors significant from the previous model, both AIC and BIC values for this model decrease (AIC = `r crit2[1]`; BIC = `r crit2[2]`), which indicates the modified model is a better fitted one. 
+
+```{r, include=FALSE}
+# Model 2 and 3: GLM model with interaction terms and use of Stepwise regression 
+n <- nrow(weather_train)
+GLM_3 <- glm(RainTomorrow ~ . -Date +Temp9am*Temp3pm +MinTemp*MaxTemp +Humidity9am*Humidity3pm +Temp9am*MinTemp +Temp9am*MaxTemp +Temp3pm*MinTemp +Temp3pm*MaxTemp, data = weather_train, family = binomial)
+summary(GLM_3)
+
+## Stepwise regression both direction based on AIC 
+sel_var_aic_both <- step(GLM_3, trace = 0, k = 2, direction = "both")
+(sel_var_aic_both_v <- attr(terms(sel_var_aic_both), "term.labels"))
+#(sel_var_aic_both_v <- names(sel_var_aic_both$coefficients))
+crit3 <- criteria(model=sel_var_aic_both)
+
+# prediction correct percentage 
+pred_3 <- predict(sel_var_aic_both, newdata = weather_test, type = "response")
+pred_num_3 <- ifelse(pred_3 > 0.5, 1, 0)
+y_pred_3 <- factor(pred_num_3, levels=c(0,1))
+pre_perc_3 <- mean(y_pred_3 == weather_test$RainTomorrow)
+
+## Stepwise regression both direction based on BIC
+sel_var_bic_both <- step(GLM_3, trace = 0, k = log(n), direction = "both")
+(sel_var_bic_both_v <- attr(terms(sel_var_bic_both), "term.labels"))
+#(sel_var_bic_both_v <- names(sel_var_bic_both$coefficients))
+crit4 <- criteria(model=sel_var_bic_both)
+
+# prediction correct percentage 
+pred_4 <- predict(sel_var_bic_both, newdata = weather_test, type = "response")
+pred_num_4 <- ifelse(pred_4 > 0.5, 1, 0)
+y_pred_4 <- factor(pred_num_4, levels=c(0,1))
+pre_perc_4 <- mean(y_pred_4 == weather_test$RainTomorrow)
+
+## Model diagnostics for setepwise bic selected glm model with interaction
+weather_train_3 <- mutate(weather_train, residuals_3=residuals(sel_var_aic_both), linpred_3=predict(sel_var_aic_both), predprob_3 = predict(sel_var_aic_both, type = "response"))
+gdf_3 <- group_by(weather_train_3, ntile(linpred_3, 100))
+diagdf_3 <- summarise(gdf_3, residuals_3=mean(residuals_3), linpred_3=mean(linpred_3), predprob_3=mean(predprob_3))
+
+par(mfrow=c(1,2))
+plot(residuals_3~linpred_3, diagdf_3, xlab="Linear Predictor", ylab="Deviance Residuals", pch=20) 
+plot(residuals_3~predprob_3, diagdf_3, xlab="Fitted Values", ylab="Deviance Residuals", pch=20)
+mtext("Residuals v.s. linear predictors and fitted value for stepwise AIC model", side = 3, line = -24, outer = TRUE)
+
+qqnorm(residuals(sel_var_aic_both))
+halfnorm(hatvalues(sel_var_aic_both))
+mtext("QQ plot and halfway normal plot for stepwise AIC model", side = 3, line = -24, outer = TRUE)
+
+weather_train_2 <- mutate(weather_train, residuals_2=residuals(sel_var_bic_both), linpred_2=predict(sel_var_bic_both), predprob_2 = predict(sel_var_bic_both, type = "response"))
+gdf_2 <- group_by(weather_train_2, ntile(linpred_2, 100))
+diagdf_2 <- summarise(gdf_2, residuals_2=mean(residuals_2), linpred_2=mean(linpred_2), predprob_2=mean(predprob_2))
+
+par(mfrow=c(1,2))
+plot(residuals_2~linpred_2, diagdf_2, xlab="Linear Predictor", ylab="Deviance Residuals", pch=20) 
+plot(residuals_2~predprob_2, diagdf_2, xlab="Fitted Values", ylab="Deviance Residuals", pch=20)
+mtext("Residuals v.s. linear predictors and fitted value for stepwise BIC model", side = 3, line = -24, outer = TRUE)
+
+qqnorm(residuals(sel_var_bic_both))
+halfnorm(hatvalues(sel_var_bic_both))
+mtext("QQ plot and halfway normal plot for stepwise BIC model", side = 3, line = -24, outer = TRUE)
+```
+
+For the second and third models we constructed, we take into account the correlation between predictors in our dataset. We first include interaction terms of strongly correlated predictors, then we proceed stepwise AIC and BIC regression in both directions. Both stepwise regression models have improved accuracy in the case of AIC and BIC comparing to the previous model.
+
+```{r, include=FALSE}
+### All the code for GLMM is preserved, but I didn't choose to use one because of inaccurate, non-covergence, and time problem
+
+#library(pbkrtest)
+# Significant predictors by Stepwise bic on both direction using full model 
+#GLM_4 <- glm(RainTomorrow ~ . -Date, data = weather_train, family = binomial)
+#GLM_4_step_bic <- step(GLM_4, trace = 0, k = log(n), direction = "both")
+#(GLM_4_step_bic_v <- attr(terms(GLM_4_step_bic), "term.labels"))
+#(sel_var_bic_both_v <- names(sel_var_bic_both$coefficients))
+
+# Model 4: Generalized linear mixed model with location as random effect using PQL method
+#library(MASS)
+#library(lme4)
+#GLMM_1 <- glmmPQL(RainTomorrow ~ MinTemp+MaxTemp+Rainfall+WindGustSpeed+WindDir9am+WindSpeed9am+WindSpeed3pm+Humidity3pm+Pressure9am+Pressure3pm+Cloud9am+Cloud3pm+RainToday, random = ~1|Location, family = binomial, data = weather_train)
+#summary(GLMM_1)
+#crit6 <- criteria(GLMM_1)
+
+# Model 5: Generalized linear mixed model with location as random effect using maximum likelihood
+#GLMM_2 <- glmer(RainTomorrow ~ MinTemp+MaxTemp+Rainfall+WindGustSpeed+WindDir9am+WindSpeed9am+WindSpeed3pm+Humidity3pm+Pressure9am+Pressure3pm+Cloud9am+Cloud3pm+RainToday+(1|Location), family = binomial, data = weather_train)
+#summary(GLMM_2)
+# Parametric bootstrap to test random effect 
+#GLMM_2_null <- glm(RainTomorrow ~ MinTemp+MaxTemp+Rainfall+WindGustSpeed+WindDir9am+WindSpeed9am+WindSpeed3pm+Humidity3pm+Pressure9am+Pressure3pm+Cloud9am+Cloud3pm+RainToday, family = binomial, data = weather_train)
+
+
+# Model 6: Generalized linear mixed model with location as random effect using maximum likelihood with reduced predictors
+#GLMM_3 <- glmer(RainTomorrow ~ MinTemp+Rainfall+WindGustSpeed+WindDir9am+WindSpeed9am+Humidity3pm+Pressure9am+Cloud9am+RainToday+(1|Location), family = binomial, data = weather_train)
+#summary(GLMM_3)
+
+# Model 7: Generalized linear mixed model with location as random effect using maximum likelihood with reduced predictors
+#GLMM_4 <- glmer(RainTomorrow ~ MaxTemp+Rainfall+WindGustSpeed+WindDir9am+WindSpeed3pm+Humidity3pm+Pressure3pm+Cloud3pm+RainToday+(1|Location), family = binomial, data = weather_train)
+#summary(GLMM_4)
+
+# Model 7: Generalized linear mixed model with location as random effect using Gauss-Hermite approximation with maximum number of quadrature points - Unable to converge 
+#GLMM4 <- glmer(RainTomorrow ~ MaxTemp+Rainfall+WindGustSpeed+WindSpeed9am+Humidity9am+Pressure9am+Cloud9am+Temp9am+RainToday + (1|Location), family = binomial, nAGQ = 5, data = weather_train)
+#summary(GLMM_4)
+#criteria(GLMM_4)
+
+
+```
+
+As we assumed in the previous GLM models, all the observations in our training dataset are independent, however, we only record 22 cities' weather conditions, which means that the observations from the same city are correlated to each other. We would like to measure the random effect of locations in order to measure the potential population effect of the cities. We first use stepwise BIC regression to get appropriate predictors from the full model, then we add the location as a random effect to the model. We first employ the PQL method, which can be flexible and widely implemented, but it's less accurate than Laplace or Gauss_Hermite approximation due to bias for large variance and small means. This model has a huge AIC and BIC value, so we would like to model using maximum likelihood. However, due to the large sample size and predictors, the model failed to converge with predictors from the previous model, so we removed some of the predictors that are highly correlated with each other. The GLMMs still fail to converge given several attempts of variables selection.  
+
+# Result
+
+## Final model selection 
+
+|Models|AIC|BIC|Prediction correction percentage|
+|---|---|---|---|
+|Full GLM model|`r crit1[1]`|`r crit1[2]`|`r pre_perc_1`|
+|Reduced GLM model with likelihood ratio test|`r crit2[1]`|`r crit2[2]`|`r pre_perc_2`|
+|Stepwise AIC with interactions in both directions|`r crit3[1]`|`r crit3[2]`|`r pre_perc_3`|
+|Stepwise BIC with interactions in both directions|`r crit4[1]`|`r crit4[2]`|`r pre_perc_4`|
+
+The above table demonstrates the properties of the models we constructed based on the training dataset. The prediction correction percentage is calculated by comparing the predicted values with observed values given a 0.5 threshold for predicted response. I would choose the stepwise AIC with interactions model as our final model since it has the highest prediction correction percentage with adequate AIC and BIC values. 
+
+## Goodness of Final model
+
+```{r, echo=FALSE}
+#install.packages("ROCR")
+#install.packages("gridExtra")
+library(ROCR)
+library(pROC)
+par(mfrow=c(2,2))
+prob1 <- predict(GLM_1, type=c("response"))
+pred1 <- prediction(prob1, weather_train$RainTomorrow)
+perf1 <- performance(pred1, measure = "tpr", x.measure = "fpr")
+plot1 <- plot(perf1, col=rainbow(7), main = "ROC curve for naive glm model", xlab="Specificity", ylab="Sensitivity")
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+auc1 <- performance(pred1, "auc")
+auc1 <- as.numeric(auc1@y.values[[1]])
+text(0.7, 0.4, label = paste("AUC = ", round(auc1, 5)))
+
+prob2 <- predict(GLM_2, type=c("response"))
+pred2 <- prediction(prob2, weather_train$RainTomorrow)
+perf2 <- performance(pred2, measure = "tpr", x.measure = "fpr")
+plot2 <- plot(perf2, col=rainbow(7), main = "ROC curve for reduced glm model", xlab="Specificity", ylab="Sensitivity")
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+auc2 <- performance(pred2, "auc")
+auc2 <- as.numeric(auc2@y.values[[1]])
+text(0.7, 0.4, label = paste("AUC = ", round(auc2, 5)))
+
+prob3 <- predict(sel_var_aic_both, type=c("response"))
+pred3 <- prediction(prob3, weather_train$RainTomorrow)
+perf3 <- performance(pred3, measure = "tpr", x.measure = "fpr")
+plot3 <- plot(perf3, col=rainbow(7), main = "ROC curve for stepwise AIC", xlab="Specificity", ylab="Sensitivity")
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+auc3 <- performance(pred3, "auc")
+auc3 <- as.numeric(auc3@y.values[[1]])
+text(0.7, 0.4, label = paste("AUC = ", round(auc3, 5)))
+
+prob4 <- predict(sel_var_bic_both, type=c("response"))
+pred4 <- prediction(prob4, weather_train$RainTomorrow)
+perf4 <- performance(pred4, measure = "tpr", x.measure = "fpr")
+plot4 <- plot(perf4, col=rainbow(7), main = "ROC curve for stepwise BIC", xlab="Specificity", ylab="Sensitivity")
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+auc4 <- performance(pred4, "auc")
+auc4 <- as.numeric(auc4@y.values[[1]])
+text(0.7, 0.4, label = paste("AUC = ", round(auc4, 5)))
+
+```
+
+ROC is a curve showing the performance of a classification model at all classification thresholds. AUC is a measure of the separation ability of the model. The higher the AUC, the better the model is in distinguishing positive and negative classes. The final model Stepwise AIC has the highest AUC value of 0.8887, which means there is a 88.9% probability that this model will be able to distinguish between positive and negative classes. 
+
+From the Appendix, the plots of deviance residuals v.s linear predictors and predicted values for stepwise AIC regression model show an unevenly distributed variation, but the problem of homogeneity of variance is improved than the previous model. By checking the QQ plot and half-normal plot, the normality of residuals is mostly preserved and there are only a few unusual observations given such a huge dataset. The unconstant variance could be caused by highly biased data and correlation among the observations. 
+
+# Discussion
+
+For our stepwise AIC regression model, others hold constant, an increase of 1% in the relative humidity at 3 pm is associated with an increase of 5.29% (exp(0.05157) - 1) in the odds of raining tomorrow. The city Alice Springs is 27.9% (1- exp(-0.327)) less likely to rain compared with the city Albury. Else hold constant, if both minimum and maximum temperature of the day increase by 1 degree Celsius, the odds of raining tomorrow decreases by 11.50% (1-exp(-0.02347-0.09338-0.005269)). 
+
+Our final model has accomplished the goal of our study: predict tomorrow’s raining status given today’s weather conditions. We have tried to reduce the predictors in the model to improve interpretability. The final model improves the discrimination ability and prediction accuracy comparing to the naïve glm model. Our study would help people in Australia to get an accurate prediction of raining status, improve their living quality and agriculture production. 
+
+There are several limitations in our model that could have an impact on our study. First, the dataset was reduced to half of the original size, and two of the variables are removed due to missing values, which would increase the bias of the sample and variation. Second, the observations are treated as independent objects while many of them are correlated with each other, which violates the assumptions of GLM. Third, there exists heterogeneity of variance in our final model, we could improve that by employing a model transformation and reducing the bias of the sample. Finally, although we have reduced a certain amount of predictors, it is still not easy to interpret our model due to interaction terms that are used to balance the correlation among variables. 
+
+
+# Reference
+
+*Department of Agriculture, Water and the Environment* Data - Department of Agriculture. (n.d.). https://www.agriculture.gov.au/abares/data. (Last Accessed: August 23, 2021)
+
+Garziano, G. (2020, July 10) *Regression Models in R* Datascience+. https://datascienceplus.com/ (Last Accessed: August 20, 2021)
+
+# Appendix
+```{r fig.align="center", echo = FALSE,fig.width = 16, fig.height=16}
+# Histogram for each quantitative variables individually
+weather_train %>% select(-c(Date, Year, RainToday, RainTomorrow)) %>% keep(is.numeric) %>% 
+  gather() %>% ggplot(aes(value)) + 
+  facet_wrap(~ key, scales = "free") + 
+  geom_histogram() + ggtitle("Histograms of quantitative variables in weather_train")
+```
+
+```{r fig.align="center", echo = FALSE,fig.width = 10, fig.height=7}
+weather_train_3 <- mutate(weather_train, residuals_3=residuals(sel_var_aic_both), linpred_3=predict(sel_var_aic_both), predprob_3 = predict(sel_var_aic_both, type = "response"))
+gdf_3 <- group_by(weather_train_3, ntile(linpred_3, 100))
+diagdf_3 <- summarise(gdf_3, residuals_3=mean(residuals_3), linpred_3=mean(linpred_3), predprob_3=mean(predprob_3))
+
+par(mfrow=c(1,2))
+plot(residuals_3~linpred_3, diagdf_3, xlab="Linear Predictor", ylab="Deviance Residuals", pch=20) 
+plot(residuals_3~predprob_3, diagdf_3, xlab="Fitted Values", ylab="Deviance Residuals", pch=20)
+mtext("Residuals v.s. linear predictors and fitted value for stepwise AIC model", side = 3, line = -1, outer = TRUE)
+
+qqnorm(residuals(sel_var_aic_both))
+halfnorm(hatvalues(sel_var_aic_both))
+mtext(" Plot for stepwise AIC model", side = 3, line = -1, outer = TRUE)
+```
+```{r fig.align="center", include = FALSE,fig.width = 10, fig.height=7}
+weather_train_2 <- mutate(weather_train, residuals_2=residuals(sel_var_bic_both), linpred_2=predict(sel_var_bic_both), predprob_2 = predict(sel_var_bic_both, type = "response"))
+gdf_2 <- group_by(weather_train_2, ntile(linpred_2, 100))
+diagdf_2 <- summarise(gdf_2, residuals_2=mean(residuals_2), linpred_2=mean(linpred_2), predprob_2=mean(predprob_2))
+
+par(mfrow=c(1,2))
+plot(residuals_2~linpred_2, diagdf_2, xlab="Linear Predictor", ylab="Deviance Residuals", pch=20) 
+plot(residuals_2~predprob_2, diagdf_2, xlab="Fitted Values", ylab="Deviance Residuals", pch=20)
+mtext("Residuals v.s. linear predictors and fitted value for stepwise BIC model", side = 3, line = -1, outer = TRUE)
+
+qqnorm(residuals(sel_var_bic_both))
+halfnorm(hatvalues(sel_var_bic_both))
+mtext("Plot for stepwise BIC model", side = 3, line = -1, outer = TRUE)
+```
+
